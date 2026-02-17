@@ -1,4 +1,4 @@
-resource "aws_vpc" "this" {
+resource "aws_vpc" "uat-vpc" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
@@ -9,14 +9,14 @@ resource "aws_vpc" "this" {
 }
 
 # INTERNET GATEWAY
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
+resource "aws_internet_gateway" "uat-igw" {
+  vpc_id = aws_vpc.uat-igw.id
 }
 
 # PUBLIC SUBNETS
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnet_cidrs)
-  vpc_id                  = aws_vpc.this.id
+  vpc_id                  = aws_vpc.uat-vpc.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = var.azs[count.index]
   map_public_ip_on_launch = true
@@ -29,7 +29,7 @@ resource "aws_subnet" "public" {
 # PRIVATE SUBNETS
 resource "aws_subnet" "private" {
   count             = length(var.private_subnet_cidrs)
-  vpc_id            = aws_vpc.this.id
+  vpc_id            = aws_vpc.uat-vpc.id
   cidr_block        = var.private_subnet_cidrs[count.index]
   availability_zone = var.azs[count.index]
 
@@ -40,7 +40,7 @@ resource "aws_subnet" "private" {
 
 # PUBLIC ROUTE TABLE
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.this.id
+  vpc_id = aws_vpc.uat-vpc.id
 }
 
 resource "aws_route" "public_internet" {
@@ -62,7 +62,7 @@ resource "aws_eip" "nat" {
 }
 
 # NAT GATEWAY
-resource "aws_nat_gateway" "this" {
+resource "aws_nat_gateway" "uat-nat" {
   count         = var.enable_nat_gateway ? 1 : 0
   allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public[0].id
@@ -70,14 +70,14 @@ resource "aws_nat_gateway" "this" {
 
 # PRIVATE ROUTE TABLE
 resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.this.id
+  vpc_id = aws_vpc.uat-vpc.id
 }
 
 resource "aws_route" "private_nat" {
   count                  = var.enable_nat_gateway ? 1 : 0
   route_table_id         = aws_route_table.private.id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.this[0].id
+  nat_gateway_id         = aws_nat_gateway.uat-nat[0].id
 }
 
 resource "aws_route_table_association" "private_assoc" {
