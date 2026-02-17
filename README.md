@@ -19,6 +19,31 @@ Invalidate Cache
 Traffic Shifted
 
 
+Final Production Flow (Very Clear)
+
+GitHub Push
+   ↓
+Jenkins Build
+   ↓
+WAR Created
+   ↓
+Upload to S3
+   ↓
+Terraform Plan
+   ↓
+Manual Approval
+   ↓
+Terraform Apply (Green)
+   ↓
+Wait
+   ↓
+Smoke Test (Green)
+   ↓
+If Success → CNAME Swap
+   ↓
+CloudFront Invalidation
+   ↓
+Traffic Shifted
 
 **COMPLETE MODULAR TERRAFORM STRUCTURE**
 
