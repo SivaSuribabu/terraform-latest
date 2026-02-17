@@ -45,6 +45,29 @@ CloudFront Invalidation
    ↓
 Traffic Shifted
 
+
+What This Pipeline Covers
+✔ GitHub integration
+✔ 6 application stages
+✔ SonarQube analysis
+✔ Quality gate enforcement
+✔ Artifact versioning
+✔ Separate Terraform repo
+✔ Manual approval before infra change
+✔ Blue/Green deployment
+✔ 5-minute smoke test
+✔ Automatic rollback
+✔ CloudFront invalidation
+✔ Email notification
+🔥 Enterprise Behavior Summary
+If Sonar fails → pipeline stops
+If Quality Gate fails → pipeline stops
+If Terraform fails → rollback
+If Smoke test fails → rollback
+If Swap fails → rollback
+If everything succeeds → email success
+
+
 **COMPLETE MODULAR TERRAFORM STRUCTURE**
 
 terraform/
