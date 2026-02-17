@@ -19,7 +19,7 @@ Invalidate Cache
 Traffic Shifted
 
 
-Final Production Flow (Very Clear)
+**Final Production Flow (Very Clear)**
 
 GitHub Push
    ↓
