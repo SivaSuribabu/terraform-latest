@@ -1,1 +1,252 @@
+pipeline {
+    agent any
 
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    environment {
+        AWS_REGION      = "us-east-1"
+        APP_NAME        = "monolith-app"
+        ARTIFACT_BUCKET = "monolith-artifacts-prod"
+        BUILD_VERSION   = "${env.BUILD_NUMBER}"
+        NEW_COLOR       = "green"
+        TF_ENV          = "uat"
+        SONAR_SERVER    = "SonarQubeServer"
+    }
+
+    stages {
+
+        /* ---------------------------
+           1. Checkout Application Repo
+        ---------------------------- */
+
+        stage('Checkout Application Code') {
+            steps {
+                git branch: 'main',
+                url: 'https://dummyrepo.github.com'
+            }
+        }
+
+        /* ---------------------------
+           2. Build WAR
+        ---------------------------- */
+
+        stage('Build WAR') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        /* ---------------------------
+           3. SonarQube Analysis
+        ---------------------------- */
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONAR_SERVER}") {
+                    sh 'mvn sonar:sonar'
+                }
+            }
+        }
+
+        /* ---------------------------
+           4. Quality Gate
+        ---------------------------- */
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        /* ---------------------------
+           5. Upload WAR to S3
+        ---------------------------- */
+
+        stage('Upload Artifact to S3') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-prod-creds']]) {
+                    sh """
+                        aws s3 cp target/ROOT.war \
+                        s3://${ARTIFACT_BUCKET}/ROOT-${BUILD_VERSION}.war \
+                        --region ${AWS_REGION}
+                    """
+                }
+            }
+        }
+
+        /* ---------------------------
+           6. Checkout Terraform Repo
+        ---------------------------- */
+
+        stage('Checkout Terraform Repo') {
+            steps {
+                dir('terraform') {
+                    git branch: 'main',
+                    url: 'https://terraform-repo.github.com'
+                }
+            }
+        }
+
+        /* ---------------------------
+           7. Terraform Init
+        ---------------------------- */
+
+        stage('Terraform Init') {
+            steps {
+                dir('terraform/environments/uat') {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        /* ---------------------------
+           8. Terraform Plan
+        ---------------------------- */
+
+        stage('Terraform Plan') {
+            steps {
+                dir('terraform/environments/uat') {
+                    sh """
+                        terraform plan \
+                        -var="build_number=${BUILD_VERSION}" \
+                        -var="environment_color=${NEW_COLOR}" \
+                        -out=tfplan
+                    """
+                }
+            }
+        }
+
+        /* ---------------------------
+           9. Manual Approval
+        ---------------------------- */
+
+        stage('Manual Approval for Apply') {
+            steps {
+                input message: "Approve Terraform Apply to ${TF_ENV}?"
+            }
+        }
+
+        /* ---------------------------
+           10. Terraform Apply (Green)
+        ---------------------------- */
+
+        stage('Terraform Apply') {
+            steps {
+                dir('terraform/environments/uat') {
+                    sh 'terraform apply -auto-approve tfplan'
+                }
+            }
+        }
+
+        /* ---------------------------
+           11. Warmup Wait
+        ---------------------------- */
+
+        stage('Environment Warmup') {
+            steps {
+                sh 'sleep 120'
+            }
+        }
+
+        /* ---------------------------
+           12. Smoke Test (5 minutes)
+        ---------------------------- */
+
+        stage('Smoke Test (5 min)') {
+            steps {
+                script {
+                    sh """
+                        END=$((SECONDS+300))
+                        while [ \$SECONDS -lt \$END ]; do
+                          curl -f https://${APP_NAME}-${NEW_COLOR}.elasticbeanstalk.com/health || exit 1
+                          sleep 15
+                        done
+                    """
+                }
+            }
+        }
+
+        /* ---------------------------
+           13. Blue/Green CNAME Swap
+        ---------------------------- */
+
+        stage('Blue/Green Swap') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-prod-creds']]) {
+                    sh """
+                        CURRENT_ENV=\$(aws elasticbeanstalk describe-environments \
+                          --application-name ${APP_NAME} \
+                          --query "Environments[?Status=='Ready'].EnvironmentName" \
+                          --output text)
+
+                        aws elasticbeanstalk swap-environment-cnames \
+                          --source-environment-name ${APP_NAME}-${NEW_COLOR} \
+                          --destination-environment-name \$CURRENT_ENV
+                    """
+                }
+            }
+        }
+
+        /* ---------------------------
+           14. CloudFront Invalidation
+        ---------------------------- */
+
+        stage('CloudFront Invalidation') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-prod-creds']]) {
+                    sh """
+                        DISTRIBUTION_ID=\$(aws cloudfront list-distributions \
+                          --query "DistributionList.Items[0].Id" \
+                          --output text)
+
+                        aws cloudfront create-invalidation \
+                          --distribution-id \$DISTRIBUTION_ID \
+                          --paths "/*"
+                    """
+                }
+            }
+        }
+    }
+
+    /* ---------------------------
+       Post Actions
+    ---------------------------- */
+
+    post {
+
+        success {
+            emailext(
+                subject: "SUCCESS: Deployment Completed - Build ${BUILD_NUMBER}",
+                body: "Deployment successful and traffic shifted.",
+                to: "dummy1@gmail.com,dummy2@gmail.com,dummy3@gmail.com,dummy4@gmail.com,dummy5@gmail.com"
+            )
+        }
+
+        failure {
+            emailext(
+                subject: "FAILED: Deployment Failed - Build ${BUILD_NUMBER}",
+                body: "Deployment failed. Immediate action required.",
+                to: "dummy1@gmail.com,dummy2@gmail.com,dummy3@gmail.com,dummy4@gmail.com,dummy5@gmail.com"
+            )
+
+            echo "Initiating rollback..."
+
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-prod-creds']]) {
+                sh """
+                    aws elasticbeanstalk swap-environment-cnames \
+                    --source-environment-name ${APP_NAME}-blue \
+                    --destination-environment-name ${APP_NAME}-${NEW_COLOR}
+                """
+            }
+        }
+    }
+}
