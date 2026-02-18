@@ -12,9 +12,8 @@ resource "aws_elastic_beanstalk_environment" "this" {
   version_label       = aws_elastic_beanstalk_application_version.version.name
   tier                = "WebServer"
 
-  # --------------------------
+
   # VPC CONFIGURATION
-  # --------------------------
 
   setting {
     namespace = "aws:ec2:vpc"
@@ -34,9 +33,8 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = join(",", var.public_subnet_ids)
   }
 
-  # --------------------------
+
   # LOAD BALANCER
-  # --------------------------
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -50,9 +48,8 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "true"
   }
 
-  # --------------------------
+
   # INSTANCE CONFIG
-  # --------------------------
 
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
@@ -72,9 +69,13 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "20"
   }
 
-  # --------------------------
+  setting {
+  namespace: "aws:autoscaling:launchconfiguration"
+      option_name: ImageId
+      value: ami-0d48c3f958668ad5f
+  }
+ 
   # AUTOSCALING GROUP
-  # --------------------------
 
   setting {
     namespace = "aws:autoscaling:asg"
@@ -88,9 +89,9 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = var.max_size
   }
 
-  # --------------------------
+
   # SCALING TRIGGER (CPU)
-  # --------------------------
+
 
   setting {
     namespace = "aws:autoscaling:trigger"
@@ -116,9 +117,9 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "30"
   }
 
-  # --------------------------
+
   # HEALTH CHECK
-  # --------------------------
+
 
   setting {
     namespace = "aws:elasticbeanstalk:application"
@@ -132,9 +133,9 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "enhanced"
   }
 
-  # --------------------------
+
   # DEPLOYMENT STRATEGY
-  # --------------------------
+
 
   setting {
     namespace = "aws:elasticbeanstalk:command"
@@ -154,9 +155,9 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "50"
   }
 
-  # --------------------------
+
   # LOGGING
-  # --------------------------
+ 
 
   setting {
     namespace = "aws:elasticbeanstalk:hostmanager"
@@ -164,9 +165,9 @@ resource "aws_elastic_beanstalk_environment" "this" {
     value     = "true"
   }
 
-  # --------------------------
+
   # ENVIRONMENT VARIABLES
-  # --------------------------
+
 
   dynamic "setting" {
     for_each = var.environment_variables
