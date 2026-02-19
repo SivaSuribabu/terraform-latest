@@ -1,3 +1,10 @@
+AP-South-1
+
+vpc-id : vpc-089a69f9765b6bd52
+subnet id : subnet-0108669173b478aa0 , subnet-04ea9ba32d0776e2d
+acm: 
+
+
 **TARGET ARCHITECTURE**
 
 Jenkins
