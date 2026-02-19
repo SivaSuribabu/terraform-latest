@@ -1,0 +1,24 @@
+output "application_name" {
+  description = "Name of the Elastic Beanstalk application"
+  value       = aws_elastic_beanstalk_application.eb_app.name
+}
+
+output "environment_name" {
+  description = "Name of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.name
+}
+
+output "environment_url" {
+  description = "URL of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.endpoint_url
+}
+
+output "cname" {
+  description = "CNAME of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.cname
+}
+
+output "s3_bucket" {
+  description = "S3 bucket for application versions"
+  value       = aws_s3_bucket.eb_bucket.bucket
+}

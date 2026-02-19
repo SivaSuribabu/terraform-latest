@@ -1,0 +1,214 @@
+# Configure the AWS Provider
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Create S3 bucket for application versions
+resource "aws_s3_bucket" "eb_bucket" {
+  bucket = "${var.application_name}-eb-deployments-${random_string.bucket_suffix.result}"
+}
+
+resource "random_string" "bucket_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+resource "aws_s3_bucket_versioning" "eb_bucket_versioning" {
+  bucket = aws_s3_bucket.eb_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Upload application version
+resource "aws_s3_object" "eb_app_version" {
+  bucket = aws_s3_bucket.eb_bucket.bucket
+  key    = "${var.application_name}-${var.app_version}.zip"
+  source = var.app_source_path
+  etag   = filemd5(var.app_source_path)
+}
+
+# Create Elastic Beanstalk Application
+resource "aws_elastic_beanstalk_application" "eb_app" {
+  name        = var.application_name
+  description = var.application_description
+
+  appversion_lifecycle {
+    service_role          = aws_iam_role.eb_service_role.arn
+    max_count             = 128
+    delete_source_from_s3 = true
+  }
+}
+
+# Create Application Version
+resource "aws_elastic_beanstalk_application_version" "eb_app_version" {
+  name         = var.app_version
+  application  = aws_elastic_beanstalk_application.eb_app.name
+  description  = "Application version ${var.app_version}"
+  bucket       = aws_s3_bucket.eb_bucket.bucket
+  key          = aws_s3_object.eb_app_version.key
+}
+
+# Create IAM role for Elastic Beanstalk service
+resource "aws_iam_role" "eb_service_role" {
+  name = "${var.application_name}-eb-service-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "elasticbeanstalk.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# Attach managed policy to service role
+resource "aws_iam_role_policy_attachment" "eb_service_role_policy" {
+  role       = aws_iam_role.eb_service_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkService"
+}
+
+# Create IAM role for EC2 instances
+resource "aws_iam_role" "eb_ec2_role" {
+  name = "${var.application_name}-eb-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# Attach managed policies to EC2 role
+resource "aws_iam_role_policy_attachment" "eb_ec2_role_web_tier" {
+  role       = aws_iam_role.eb_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier"
+}
+
+resource "aws_iam_role_policy_attachment" "eb_ec2_role_worker_tier" {
+  role       = aws_iam_role.eb_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier"
+}
+
+resource "aws_iam_role_policy_attachment" "eb_ec2_role_multicontainer_docker" {
+  role       = aws_iam_role.eb_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker"
+}
+
+# Create instance profile
+resource "aws_iam_instance_profile" "eb_ec2_profile" {
+  name = "${var.application_name}-eb-ec2-profile"
+  role = aws_iam_role.eb_ec2_role.name
+}
+
+# Get default VPC
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Get default subnets
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# Create Elastic Beanstalk Environment
+resource "aws_elastic_beanstalk_environment" "eb_env" {
+  name                = var.environment_name
+  application         = aws_elastic_beanstalk_application.eb_app.name
+  solution_stack_name = var.solution_stack_name
+  version_label       = aws_elastic_beanstalk_application_version.eb_app_version.name
+
+  # Configuration settings
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "IamInstanceProfile"
+    value     = aws_iam_instance_profile.eb_ec2_profile.name
+  }
+
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "InstanceType"
+    value     = var.instance_type
+  }
+
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "EC2KeyName"
+    value     = var.key_name
+  }
+
+  setting {
+    namespace = "aws:autoscaling:asg"
+    name      = "MinSize"
+    value     = var.min_size
+  }
+
+  setting {
+    namespace = "aws:autoscaling:asg"
+    name      = "MaxSize"
+    value     = var.max_size
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "EnvironmentType"
+    value     = "LoadBalanced"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ServiceRole"
+    value     = aws_iam_role.eb_service_role.arn
+  }
+
+  setting {
+    namespace = "aws:ec2:vpc"
+    name      = "VPCId"
+    value     = data.aws_vpc.default.id
+  }
+
+  setting {
+    namespace = "aws:ec2:vpc"
+    name      = "Subnets"
+    value     = join(",", data.aws_subnets.default.ids)
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:healthreporting:system"
+    name      = "SystemType"
+    value     = "enhanced"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:application:environment"
+    name      = "NODE_ENV"
+    value     = var.node_env
+  }
+
+  tags = var.tags
+}
