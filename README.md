@@ -5,6 +5,74 @@ subnet id : subnet-0108669173b478aa0 , subnet-04ea9ba32d0776e2d
 acm: 
 
 
+resource "aws_elastic_beanstalk_application" "app" {
+  name = "my-app"
+}
+
+resource "aws_elastic_beanstalk_environment" "env" {
+  name                = "prod-env"
+  application         = aws_elastic_beanstalk_application.app.name
+  solution_stack_name = "64bit Amazon Linux 2 v5.8.2 running Tomcat 9"
+}
+
+
+aws s3 cp target/ROOT.war s3://my-eb-artifacts/ROOT-${BUILD_NUMBER}.war
+
+aws elasticbeanstalk create-application-version \
+  --application-name my-app \
+  --version-label v${BUILD_NUMBER} \
+  --source-bundle S3Bucket=my-eb-artifacts,S3Key=ROOT-${BUILD_NUMBER}.war
+
+aws elasticbeanstalk update-environment \
+  --environment-name prod-env \
+  --version-label v${BUILD_NUMBER}
+
+
+db:
+setting {
+  namespace = "aws:elasticbeanstalk:application:environment"
+  name      = "DB_HOST"
+  value     = "mydb.rds.amazonaws.com"
+}
+
+
+modules/beanstalk/main.tf
+Put this here:
+Hcl
+Copy code
+resource "aws_elastic_beanstalk_application" "app" {
+  name = var.application_name
+}
+
+resource "aws_elastic_beanstalk_environment" "env" {
+  name                = var.environment_name
+  application         = aws_elastic_beanstalk_application.app.name
+  solution_stack_name = var.solution_stack
+}
+2️⃣ modules/beanstalk/variables.tf
+Hcl
+Copy code
+variable "application_name" {
+  type = string
+}
+
+variable "environment_name" {
+  type = string
+}
+
+variable "solution_stack" {
+  type = string
+}
+3️⃣ root main.tf
+Call the module:
+Hcl
+Copy code
+module "beanstalk" {
+  source           = "./modules/beanstalk"
+  application_name = "my-app"
+  environment_name = "prod-env"
+  solution_stack   = "64bit Amazon Linux 2 v5.8.2 running Tomcat 9"
+}
 **TARGET ARCHITECTURE**
 
 Jenkins
