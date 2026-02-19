@@ -1,0 +1,377 @@
+Using Terraform Lifecycle with Timeouts
+This method uses Terraform's lifecycle rules to automatically destroy resources after a certain time.
+
+Add to your terraform.tfvars:
+
+# Enable auto-termination
+auto_terminate_enabled = true
+
+# Terminate after 8 hours (daily at 6 PM if created at 10 AM)
+environment_ttl_hours = 8
+
+# Or use cron expression for specific times
+termination_schedule = "cron(0 18 * * ? *)"  # Daily at 6 PM UTC
+
+# Examples of other schedules:
+# termination_schedule = "cron(0 22 * * ? *)"     # Daily at 10 PM UTC
+# termination_schedule = "cron(0 18 ? * FRI *)"   # Every Friday at 6 PM UTC
+# termination_schedule = "rate(24 hours)"         # Every 24 hours
+# termination_schedule = "rate(8 hours)"          # Every 8 hours
+
+
+1. Terminate after specific duration:
+terraform apply -var="auto_terminate_enabled=true" -var="environment_ttl_hours=4"
+
+2. Terminate at specific time daily:
+terraform apply -var="auto_terminate_enabled=true" -var="termination_schedule=cron(0 20 * * ? *)"
+
+3. Terminate on weekends only:
+terraform apply -var="auto_terminate_enabled=true" -var="termination_schedule=cron(0 18 ? * SAT *)"
+
+
+
+*******************************************************
+1. Add to your main.tf (Custom Domain Configuration):
+# Data source for existing Route 53 hosted zone
+data "aws_route53_zone" "main" {
+  name         = var.domain_name
+  private_zone = false
+}
+
+# Request SSL certificate from AWS Certificate Manager
+resource "aws_acm_certificate" "ssl_certificate" {
+  domain_name               = var.domain_name
+  subject_alternative_names = ["*.${var.domain_name}"]
+  validation_method         = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = var.tags
+}
+
+# Create DNS validation records
+resource "aws_route53_record" "ssl_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.ssl_certificate.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.main.zone_id
+}
+
+# Wait for certificate validation
+resource "aws_acm_certificate_validation" "ssl_validation" {
+  certificate_arn         = aws_acm_certificate.ssl_certificate.arn
+  validation_record_fqdns = [for record in aws_route53_record.ssl_validation : record.fqdn]
+
+  timeouts {
+    create = "5m"
+  }
+}
+
+# Update Elastic Beanstalk Environment with SSL configuration
+resource "aws_elastic_beanstalk_environment" "eb_env" {
+  name                = var.environment_name
+  application         = aws_elastic_beanstalk_application.eb_app.name
+  solution_stack_name = var.solution_stack_name
+  version_label       = aws_elastic_beanstalk_application_version.eb_app_version.name
+
+  # Existing settings...
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "IamInstanceProfile"
+    value     = aws_iam_instance_profile.eb_ec2_profile.name
+  }
+
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "InstanceType"
+    value     = var.instance_type
+  }
+
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "EC2KeyName"
+    value     = var.key_name
+  }
+
+  setting {
+    namespace = "aws:autoscaling:asg"
+    name      = "MinSize"
+    value     = var.min_size
+  }
+
+  setting {
+    namespace = "aws:autoscaling:asg"
+    name      = "MaxSize"
+    value     = var.max_size
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "EnvironmentType"
+    value     = "LoadBalanced"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ServiceRole"
+    value     = aws_iam_role.eb_service_role.arn
+  }
+
+  setting {
+    namespace = "aws:ec2:vpc"
+    name      = "VPCId"
+    value     = data.aws_vpc.default.id
+  }
+
+  setting {
+    namespace = "aws:ec2:vpc"
+    name      = "Subnets"
+    value     = join(",", data.aws_subnets.default.ids)
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:healthreporting:system"
+    name      = "SystemType"
+    value     = "enhanced"
+  }
+
+  # SSL/HTTPS Configuration
+  setting {
+    namespace = "aws:elbv2:listener:443"
+    name      = "Protocol"
+    value     = "HTTPS"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listener:443"
+    name      = "SSLCertificateArns"
+    value     = aws_acm_certificate_validation.ssl_validation.certificate_arn
+  }
+
+  setting {
+    namespace = "aws:elbv2:listener:443"
+    name      = "DefaultProcess"
+    value     = "default"
+  }
+
+  # Redirect HTTP to HTTPS
+  setting {
+    namespace = "aws:elbv2:listener:80"
+    name      = "Protocol"
+    value     = "HTTP"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "PathPatterns"
+    value     = "*"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "Priority"
+    value     = "1"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "RedirectActionType"
+    value     = "redirect"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "RedirectActionStatusCode"
+    value     = "HTTP_301"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "RedirectActionProtocol"
+    value     = "HTTPS"
+  }
+
+  setting {
+    namespace = "aws:elbv2:listenerrule:redirect"
+    name      = "RedirectActionPort"
+    value     = "443"
+  }
+
+  # Load balancer configuration
+  setting {
+    namespace = "aws:elbv2:loadbalancer"
+    name      = "SecurityGroups"
+    value     = aws_security_group.eb_lb_sg.id
+  }
+
+  setting {
+    namespace = "aws:elbv2:loadbalancer"
+    name      = "ManagedSecurityGroup"
+    value     = aws_security_group.eb_lb_sg.id
+  }
+
+  # Environment variables
+  setting {
+    namespace = "aws:elasticbeanstalk:application:environment"
+    name      = "NODE_ENV"
+    value     = var.node_env
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:application:environment"
+    name      = "DOMAIN_NAME"
+    value     = var.domain_name
+  }
+
+  tags = var.tags
+
+  depends_on = [aws_acm_certificate_validation.ssl_validation]
+}
+
+# Security group for load balancer
+resource "aws_security_group" "eb_lb_sg" {
+  name_prefix = "${var.application_name}-lb-"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.application_name}-lb-sg"
+  })
+}
+
+# Route 53 record for the main domain (apex)
+resource "aws_route53_record" "main_domain" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_elastic_beanstalk_environment.eb_env.cname
+    zone_id                = data.aws_elastic_beanstalk_hosted_zone.current.id
+    evaluate_target_health = true
+  }
+}
+
+# Route 53 record for www subdomain
+resource "aws_route53_record" "www_domain" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "www.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_elastic_beanstalk_environment.eb_env.cname
+    zone_id                = data.aws_elastic_beanstalk_hosted_zone.current.id
+    evaluate_target_health = true
+  }
+}
+
+# Get Elastic Beanstalk hosted zone for the region
+data "aws_elastic_beanstalk_hosted_zone" "current" {}
+
+
+2. Add to your variables.tf:
+variable "domain_name" {
+  description = "The domain name to use (e.g., example.com)"
+  type        = string
+}
+
+variable "enable_custom_domain" {
+  description = "Enable custom domain configuration"
+  type        = bool
+  default     = true
+}
+
+variable "enable_ssl_redirect" {
+  description = "Enable HTTP to HTTPS redirect"
+  type        = bool
+  default     = true
+}
+
+variable "ssl_policy" {
+  description = "SSL security policy for the load balancer"
+  type        = string
+  default     = "ELBSecurityPolicy-TLS-1-2-2017-01"
+}
+
+
+
+3. Add to your terraform.tfvars:
+# Domain configuration
+domain_name           = "yourdomain.com"
+enable_custom_domain  = true
+enable_ssl_redirect   = true
+
+# Other existing variables...
+aws_region              = "us-east-1"
+application_name        = "my-web-app"
+application_description = "My Web Application on Elastic Beanstalk"
+environment_name        = "my-web-app-prod"
+
+
+Update outputs.tf:
+output "application_name" {
+  description = "Name of the Elastic Beanstalk application"
+  value       = aws_elastic_beanstalk_application.eb_app.name
+}
+
+output "environment_name" {
+  description = "Name of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.name
+}
+
+output "environment_url" {
+  description = "URL of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.endpoint_url
+}
+
+output "cname" {
+  description = "CNAME of the Elastic Beanstalk environment"
+  value       = aws_elastic_beanstalk_environment.eb_env.cname
+}
+
+output "custom_domain_url" {
+  description = "Custom domain URL"
+  value       = var.enable_custom_domain ? "https://${var.domain_name}" : null
+}
+
+output "ssl_certificate_arn" {
+  description = "ARN of the SSL certificate"
+  value       = var.enable_custom_domain ? aws_acm_certificate.ssl_certificate.arn : null
+}
+
+output "route53_zone_id" {
+  description = "Route 53 hosted zone ID"
+  value       = var.enable_custom_domain ? data.aws_route53_zone.main.zone_id : null
+}
