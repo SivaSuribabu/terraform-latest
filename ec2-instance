@@ -1,0 +1,267 @@
+✅ Architecture
+
+Terraform modular structure
+
+Jenkins pipeline with parameters:
+
+requester_name
+
+purpose
+
+jira_id
+
+hours_to_live
+
+email
+
+Instance tagged with:
+
+Owner
+
+Purpose
+
+Jira
+
+ExpiryTime (epoch)
+
+Jenkins:
+
+terraform apply
+
+send email
+
+wait hours
+
+terraform destroy
+
+send email
+
+Then I’ll show better enterprise way after that.
+
+✅ Terraform Modular Structure
+infra/
+ ├── main.tf
+ ├── variables.tf
+ ├── outputs.tf
+ ├── backend.tf
+ └── modules/
+      └── ec2/
+           ├── main.tf
+           ├── variables.tf
+           └── outputs.tf
+📁 modules/ec2/variables.tf
+variable "ami_id" {}
+variable "instance_type" {}
+variable "subnet_id" {}
+variable "security_group_ids" { type = list(string) }
+
+variable "requester_name" {}
+variable "purpose" {}
+variable "jira_id" {}
+variable "expiry_time" {}
+📁 modules/ec2/main.tf
+resource "aws_instance" "this" {
+  ami           = var.ami_id
+  instance_type = var.instance_type
+  subnet_id     = var.subnet_id
+  vpc_security_group_ids = var.security_group_ids
+
+  tags = {
+    Name         = "on-demand-instance"
+    Owner        = var.requester_name
+    Purpose      = var.purpose
+    Jira         = var.jira_id
+    ExpiryTime   = var.expiry_time
+    ManagedBy    = "Terraform"
+  }
+}
+📁 modules/ec2/outputs.tf
+output "instance_id" {
+  value = aws_instance.this.id
+}
+
+output "public_ip" {
+  value = aws_instance.this.public_ip
+}
+📁 root variables.tf
+variable "requester_name" {}
+variable "purpose" {}
+variable "jira_id" {}
+variable "hours_to_live" {}
+variable "email" {}
+📁 root main.tf
+provider "aws" {
+  region = "ap-south-1"
+}
+
+data "aws_subnet" "default" {
+  default_for_az = true
+}
+
+data "aws_security_group" "default" {
+  name = "default"
+}
+
+locals {
+  expiry_time = timeadd(timestamp(), "${var.hours_to_live}h")
+}
+
+module "ec2" {
+  source = "./modules/ec2"
+
+  ami_id             = "ami-0f58b397bc5c1f2e8"
+  instance_type      = "t3.micro"
+  subnet_id          = data.aws_subnet.default.id
+  security_group_ids = [data.aws_security_group.default.id]
+
+  requester_name = var.requester_name
+  purpose        = var.purpose
+  jira_id        = var.jira_id
+  expiry_time    = local.expiry_time
+}
+📁 backend.tf (IMPORTANT)
+terraform {
+  backend "s3" {
+    bucket         = "siva-tf-state"
+    key            = "ephemeral/ec2.tfstate"
+    region         = "ap-south-1"
+    dynamodb_table = "terraform-lock"
+  }
+}
+✅ Jenkinsfile (Practical Version)
+
+This assumes:
+
+Terraform installed in Jenkins
+
+AWS credentials configured
+
+Email plugin configured
+
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'REQUESTER_NAME', description: 'Requester Name')
+        string(name: 'PURPOSE', description: 'Purpose of Instance')
+        string(name: 'JIRA_ID', description: 'Jira ID')
+        string(name: 'HOURS_TO_LIVE', description: 'How many hours')
+        string(name: 'EMAIL', description: 'Notification Email')
+    }
+
+    environment {
+        TF_VAR_requester_name = "${params.REQUESTER_NAME}"
+        TF_VAR_purpose        = "${params.PURPOSE}"
+        TF_VAR_jira_id        = "${params.JIRA_ID}"
+        TF_VAR_hours_to_live  = "${params.HOURS_TO_LIVE}"
+        TF_VAR_email          = "${params.EMAIL}"
+    }
+
+    stages {
+
+        stage('Terraform Init') {
+            steps {
+                sh 'terraform init'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                sh 'terraform apply -auto-approve'
+            }
+        }
+
+        stage('Notify Launch') {
+            steps {
+                emailext(
+                    subject: "EC2 Instance Launched",
+                    body: """Instance created.
+Requester: ${params.REQUESTER_NAME}
+Purpose: ${params.PURPOSE}
+JIRA: ${params.JIRA_ID}
+TTL: ${params.HOURS_TO_LIVE} hours""",
+                    to: "${params.EMAIL}"
+                )
+            }
+        }
+
+        stage('Sleep Until Expiry') {
+            steps {
+                script {
+                    sleep(time: params.HOURS_TO_LIVE.toInteger(), unit: 'HOURS')
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            steps {
+                sh 'terraform destroy -auto-approve'
+            }
+        }
+
+        stage('Notify Destroy') {
+            steps {
+                emailext(
+                    subject: "EC2 Instance Destroyed",
+                    body: "Instance destroyed after TTL.",
+                    to: "${params.EMAIL}"
+                )
+            }
+        }
+    }
+}
+⚠️ Why This Is NOT Enterprise Safe
+
+If:
+
+Jenkins restarts
+
+Node crashes
+
+Pipeline aborted
+
+Instance never gets destroyed.
+
+That’s dangerous and expensive.
+
+✅ Enterprise-Grade Approach (Better Way)
+
+Instead of sleep:
+
+Tag instance with ExpiryTime
+
+Create:
+
+Lambda
+
+EventBridge rule (every 1 hour)
+
+Lambda checks:
+
+If current time > ExpiryTime
+
+Terminate instance
+
+Send SES email
+
+That removes Jenkins dependency.
+
+What You Should Do
+
+If this is:
+
+For learning → Jenkins sleep is fine
+
+For real company usage → use Lambda cleanup
+
+Now answer this:
+
+Do you want:
+
+Full Terraform code for Lambda auto-destroy?
+
+Or extend this with approval step before launch?
+
+Or multi-user dynamic instance naming and logging in DynamoDB?
+
+Be clear about your target level.
