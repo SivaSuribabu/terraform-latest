@@ -1,0 +1,204 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'Java11'
+        maven 'Maven36'
+        gradle 'GRADLE601'
+    }
+    environment {
+        GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no"
+        CREDENTIAL_ID = 'Admin2'
+    }
+    parameters {
+        string(name: 'ENV_NAME', defaultValue: 'prod', description: 'Represents environment like dev, uat, prod')
+        string(name: 'APPLICATION_NAME', defaultValue: 'IE-Flights', description: 'Represents Application name in Elastic Beanstalk')
+        string(name: 'MACHINE_ID', defaultValue: 'ami-0d48c3f958668ad5f', description: 'Represents Image Id of Elastic Beanstalk')
+        string(name: 'SMOKE_TEST_SLEEP_TIME', defaultValue: '300', description: 'Represents smoke test sleep time in seconds')
+        string(name: 'SOURCE_CODE_BUCKET', defaultValue: 'ie-microservices-prod', description: 'Represents source code bucket')
+        string(name: 'CONFIG_BUCKET', defaultValue: 'ie-microservices-prod', description: 'Represents configurations bucket')
+        string(name: 'ELB_BUCKET', defaultValue: 'logs-flights', description: 'Represents logs saving bucket')
+        string(name: 'HTTPS_SSL_CERTIFICATE', defaultValue: 'arn:aws:acm:us-east-1:571355911189:certificate\\/307a64a9-ed93-481b-a0b1-57e8d70749b5', description: 'Represents HTTPS SSL certificate Id')
+        string(name: 'BUILD_NUMBER', defaultValue: '2024', description: 'Represents buildNumber')
+        string(name: 'ip2Location', defaultValue: 'master', description: 'Represents iG-Commons-V3 IP2Location branch')
+        string(name: 'travelDomain', defaultValue: 'MS-47-Cloud-Integration', description: 'Represents microservices travel-domain, cache-service publish branch')
+        string(name: 'cxpAch', defaultValue: 'main', description: 'Represents cxp-ach branch')
+		string(name: 'igCommons', defaultValue: 'master', description: 'Represents iG-Commons branch')
+        string(name: 'igEngine', defaultValue: 'master', description: 'Represents iG-Engine branch')
+	    string(name: 'selenium', defaultValue: 'master', description: 'Represents cicd branch')
+    }
+    stages {
+       stage('Clean Workspace') {
+            steps {
+                deleteDir() // This step clears the workspace
+            }
+        }
+        stage('Build IP2Location') {
+                steps {
+                dir('iG-Commons-V3') {
+                        git branch: "${params.ip2Location}", changelog: false, credentialsId: "${CREDENTIAL_ID}", poll: false, url: 'git@github.com:YanaGit/iG-Commons-V3.git'
+                        dir('IP2Location') {
+                            sh "gradle clean build -x test publish"
+                            
+                        }
+                    }
+                }
+        }
+		stage('Build travel-domain and cache-service') {
+             steps {
+                dir('microservices') {
+                    git branch: "${params.travelDomain}", changelog: false, credentialsId: "${CREDENTIAL_ID}", poll: false, url: 'git@github.com:YanaGit/microservices.git'
+                    dir('travel-domain') {
+                        sh "gradle clean build -x test publish"
+                    }
+                    dir('cache-service') {
+                        sh "gradle clean build -x test publish"
+                    }
+                }
+            }
+        }
+
+        stage('Build CXP-ach') {
+            steps {
+                dir('connexpay-ach') {
+
+                   git branch: "${params.cxpAch}", changelog: false, credentialsId: "${CREDENTIAL_ID}", poll: false, url: 'git@github.com:nextgenie/connexpay-ach.git'
+
+                  dir('ach-lite-purchase-events-producer') {
+                      sh "mvn clean install"
+                  }
+
+                  dir('ach-lite-purchase-updates-consumer') {
+                      sh "mvn clean install"
+                  }
+                }
+            }
+        }
+        stage('Build iG-Commons') {
+            steps {
+                dir('iG-Commons') {
+                    git branch: "${params.igCommons}", changelog: false, credentialsId: "${CREDENTIAL_ID}", poll: false, url: 'git@github.com:YanaGit/iG-Commons.git'
+                    sh "mvn clean install -Penv-${params.ENV_NAME} -DskipTests -DbuildNumber=${params.BUILD_NUMBER} -Dmaven.clover.skip=true -T 4"
+                }
+            }
+        }
+
+        stage('Build IE-Engine') {
+            steps {
+
+				git branch: "${params.igEngine}", changelog: false, credentialsId: "${CREDENTIAL_ID}", poll: false, url: 'git@github.com:YanaGit/iG-Engine.git'
+                dir('IE-Mobile') {
+                    sh "wget https://ie-microservices-prod.s3.us-east-1.amazonaws.com/config/yarn.lock"
+
+                }
+                dir('IE') {
+                        sh "cd src/main/resources/templates/ && \
+                            echo 'Hi I am Guna' && \
+                            wget https://ie-microservices-prod.s3.us-east-1.amazonaws.com/config/dist.zip && \
+                            unzip dist.zip && \
+                            rm -rf dist.zip"
+                        }
+					    sh "mvn clean install -Penv-${params.ENV_NAME}  -DbuildNumber=${params.BUILD_NUMBER} -DskipTests -T 4"
+            }
+        }
+
+        stage("push to s3"){
+            steps{
+                sh "aws s3 cp /workspace/target/ROOT.war s3://${params.SOURCE_CODE_BUCKET}/flights/ROOT.war"
+            }
+        }
+
+        stage("checkout-terraform"){
+            steps{
+                git branch: 'main', credentialsId: 'admin', url: 'https://github.com/nextgenie/InfraStructure.git'
+                dir("uat-infra-v3"){
+                    // Configure AWS credentials (assumes Jenkins has AWS credentials plugin)
+                    withAWS(credentials: 'aws-credentials', region: 'ap-south-1') {
+                        // Validate terraform configuration
+                        sh "terraform validate"
+                        
+                        // Initialize terraform with backend
+                        sh "terraform init"
+                        
+                        // Create/update terraform.tfvars from parameters
+                        sh '''
+                            cat > terraform.tfvars <<EOF
+                            aws_region = "ap-south-1"
+                            project_name = "indian-eagle-uat-infra"
+                            environment_name = "${ENV_NAME}"
+                            app_name = "${APPLICATION_NAME}"
+                            env_name = "${APPLICATION_NAME}-${ENV_NAME}"
+                            solution_stack_name = "64bit Amazon Linux 2023 v5.8.2 running Tomcat 9 Corretto 11"
+                            instance_type = "t3.medium"
+                            min_size = 1
+                            max_size = 2
+                            desired_capacity = 1
+                            vpc_id = "${VPC_ID}"
+                            private_subnets = ["${PRIVATE_SUBNET_1}", "${PRIVATE_SUBNET_2}"]
+                            public_subnets = ["${PUBLIC_SUBNET_1}", "${PUBLIC_SUBNET_2}"]
+                            custom_domain = "${CUSTOM_DOMAIN}"
+                            route53_hosted_zone_id = "${ROUTE53_ZONE_ID}"
+                            acm_certificate_arn = "${HTTPS_SSL_CERTIFICATE}"
+                            source_code_bucket = "${SOURCE_CODE_BUCKET}"
+                            source_code_key = "flights/ROOT.war"
+                            health_check_path = "/"
+                            healthy_threshold = 3
+                            unhealthy_threshold = 5
+                            health_check_interval = 30
+                            health_check_timeout = 5
+                            enable_https_redirect = true
+                            EOF
+                                                   
+                        '''
+                        
+                        // Generate and review plan
+                        sh "terraform plan -out=tfplan"
+                        
+                        echo "Terraform plan generated. Review above for any issues before applying."
+                        
+                        // Apply terraform configuration
+                        sh "terraform apply -auto-approve tfplan"
+                        
+                        // Capture and output key infrastructure details
+                        sh "terraform output infrastructure_summary"
+                        sh "terraform output dns_configuration_info"
+                    }
+                }
+            }
+        }
+
+        stage("wait-for-cleanup"){
+            steps{
+                echo "UAT environment deployed and running. Waiting before cleanup..."
+                sleep(time: 10, unit: 'HOURS')
+                echo "Cleanup period complete. Proceeding with infrastructure teardown."
+            }
+        }
+
+        stage("destroy-infrastructure"){
+            steps{
+                dir("uat-infra-v3"){
+                    withAWS(credentials: 'aws-credentials', region: 'ap-south-1') {
+                        echo "Destroying UAT infrastructure..."
+                        sh "terraform destroy -auto-approve"
+                        echo "Infrastructure destroyed successfully."
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "Successfully Deployed."
+            emailext body: 'Hello Team,${SCRIPT, template="groovy-html.template"}',mimeType: 'text/html',
+            recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']],
+            subject: "UAT-Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+        }
+        failure {
+            echo "Deployment failed."
+            emailext body: 'Hello Team,${SCRIPT, template="groovy-html.template"}',mimeType: 'text/html',
+            recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']],
+            subject: "UAT-Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+        }
+    }
+}

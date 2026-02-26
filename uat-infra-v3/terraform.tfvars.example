@@ -1,0 +1,96 @@
+# ============================================================================
+# TERRAFORM VARIABLES FILE - EXAMPLE TEMPLATE
+# ============================================================================
+#
+# This file serves as a template for terraform.tfvars
+# COPY THIS FILE TO terraform.tfvars AND UPDATE WITH YOUR VALUES
+#
+# Command: cp terraform.tfvars.example terraform.tfvars
+#
+# Then edit terraform.tfvars with your actual values
+# This example file is safe to commit to version control
+#
+
+# ============================================================================
+# AWS REGION
+# ============================================================================
+aws_region = "ap-south-1"
+
+# ============================================================================
+# PROJECT AND ENVIRONMENT NAMING
+# ============================================================================
+project_name = "uat-infra"
+environment_name = "uat"
+
+# ============================================================================
+# ELASTIC BEANSTALK APPLICATION CONFIGURATION
+# ============================================================================
+app_name = "java-tomcat-app"
+env_name = "java-tomcat-uat"
+solution_stack_name = "64bit Amazon Linux 2 v5.8.2 running Tomcat 9 Corretto 11"
+
+# ============================================================================
+# EC2 INSTANCE CONFIGURATION
+# ============================================================================
+instance_type = "t3.medium"
+
+# ============================================================================
+# AUTO-SCALING CONFIGURATION
+# ============================================================================
+min_size = 2
+max_size = 4
+desired_capacity = 2
+
+# ============================================================================
+# NETWORKING CONFIGURATION - UPDATE WITH YOUR VALUES
+# ============================================================================
+# Replace 'vpc-xxxxxxxxxxxxxxx' with your actual VPC ID
+vpc_id = "vpc-xxxxxxxxxxxxxxx"
+
+# Replace with your actual private subnet IDs
+private_subnets = ["subnet-xxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxx"]
+
+# Replace with your actual public subnet IDs
+public_subnets = ["subnet-xxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxx"]
+
+# ============================================================================
+# CUSTOM DOMAIN AND SSL/TLS CONFIGURATION - UPDATE WITH YOUR VALUES
+# ============================================================================
+custom_domain = "uat.test.com"
+
+# (OPTIONAL) When you have a Route53 hosted zone for the domain below,
+# provide its ID and Terraform will automatically create an A alias record
+# pointing the custom_domain to the Beanstalk ALB. Leave blank to apply
+# DNS manually.
+# Example: "Z1234567890ABC"
+#route53_hosted_zone_id = ""
+
+# Replace with your actual ACM certificate ARN
+acm_certificate_arn = "arn:aws:acm:ap-south-1:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+
+# ============================================================================
+# APPLICATION SOURCE CODE CONFIGURATION - UPDATE WITH YOUR VALUES
+# ============================================================================
+source_code_bucket = "my-app-source-bucket"
+source_code_key = "app.war"
+
+# ============================================================================
+# HEALTH CHECK CONFIGURATION
+# ============================================================================
+health_check_path = "/"
+healthy_threshold = 3
+unhealthy_threshold = 5
+health_check_interval = 30
+health_check_timeout = 5
+
+# ============================================================================
+# HTTPS/SSL CONFIGURATION
+# ============================================================================
+enable_https_redirect = true
+
+# ============================================================================
+# CLOUDWATCH LOGGING CONFIGURATION
+# ============================================================================
+# (disabled by default; remove comments to re-enable)
+# enable_cloudwatch_logs = true
+# log_retention_days = 7
